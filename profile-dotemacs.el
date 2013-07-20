@@ -173,7 +173,7 @@ grayed out.")
   "Calculate total time of RESULTS."
   (let ((totaltime 0))
     (mapc (lambda (x)
-	    (let ((cur (car (last x))))
+	    (let ((cur (car x)))
 	      (setq totaltime (+ totaltime (car cur) (nth 2 cur)))))
 	  results)
     totaltime))
