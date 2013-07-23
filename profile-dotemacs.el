@@ -110,72 +110,89 @@ grayed out.")
 (defun profile-dotemacs (&optional file-or-buffer)
   "Load `profile-dotemacs-file' and benchmark its sexps."
   (interactive)
-  (with-current-buffer (or (when (bufferp file-or-buffer)
-                             file-or-buffer)
-                           (find-file file-or-buffer)
-                           (find-file-noselect profile-dotemacs-file t))
+  (with-current-buffer (find-file-noselect profile-dotemacs-file t)
     (setq buffer-read-only t) ;; just to be sure
     (goto-char (point-min))
     (let (start end results)
       (while
-	  (< (point)
-	     (setq end (progn
-			 (forward-sexp 1)
-			 (point))))
-	(forward-sexp -1)
-	(setq start (point))
-	(add-to-list
-	 'results
-	 `(,start ,end
-		  ,(benchmark-run
-		    (eval (sexp-at-point)))))
-	(goto-char end))
+          (< (point)
+             (setq end (progn
+                         (forward-sexp 1)
+                         (point))))
+        (forward-sexp -1)
+        (setq start (point))
+         ;; Escaping newlines to spaces
+        (add-to-list
+         'results
+         `((,(replace-regexp-in-string "
+" " " (buffer-substring-no-properties start end)) ,start ,end)
+           ,(benchmark-run
+                (eval (sexp-at-point)))))
+        (goto-char end))
       (profile-dotemacs-show-results results)
+      (profile-dotemacs-write-results results)
       (switch-to-buffer (current-buffer)))))
 
 ;; Helper functions
 
+(defun profile-dotemacs-write-results (results &optional file-path)
+  "Write results to a org-mode formated-table."
+  ;; (buffer-substring start-point end-point)
+  (with-current-buffer (find-file-noselect "~/tmp.org" t)
+    (goto-char (point-min))
+    (dolist (result results)
+      (destructuring-bind
+          ((sexp-string start-point end-point) (total-time num-gc time-gc)) result
+        (insert
+         (format "| %s| %.2f | %d | %.2f |\n" sexp-string total-time num-gc
+                 time-gc))))
+    (save-buffer)))
+
 (defun profile-dotemacs-show-results (results)
   "Show timings from RESULTS in current buffer."
-  (let ((totaltime (profile-dotemacs-totaltime results))
-	current percentage ov)
-    (while results
-      (let* ((current (pop results))
-	     (ov (make-overlay (car current) (cadr current)))
-	     (current (car (last current)))
-	     (percentage (/ (+ (car current) (nth 2 current))
-			    totaltime))
-	     col benchstr lowface)
-	(setq col
-	      (profile-dotemacs-percentage-color
-	       percentage
-	       (face-background 'profile-dotemacs-default-face)
-	       (face-background 'profile-dotemacs-time-face)))
-	(setq percentage (round (* 100 percentage)))
-	(setq benchstr (profile-dotemacs-make-benchstr current))
-	(overlay-put ov 'help-echo benchstr)
-	(if (and (numberp profile-dotemacs-low-percentage)
-		 (< percentage profile-dotemacs-low-percentage))
-	    (overlay-put ov 'face 'profile-dotemacs-low-percentage-face)
-	  (overlay-put ov 'before-string
-		       (propertize benchstr
-				   'face 'profile-dotemacs-highlight-face))
-	  (overlay-put ov 'face
-		       `(:background ,col)))))
-    (setq ov (make-overlay (1- (point-max)) (point-max)))
-    (overlay-put ov 'after-string
-		 (propertize
-		  (format "\n-----------------\nTotal time: %.2fs\n"
-			  totaltime)
-		  'face 'profile-dotemacs-highlight-face))))
+  (let ((total-time (profile-dotemacs-totaltime results))
+        current percentage ov)
+    (dolist (result results)
+      (destructuring-bind
+          ((sexp-string start-point end-point) (sexp-time garbage-collected time-for-gc)) result
+          (let* ((overlay (make-overlay start-point end-point))
+                 (ratio (/ (+ sexp-time time-for-gc) total-time))
+                 (percentage (round (* 100 ratio)))
+                 (benchstr (profile-dotemacs-make-benchstr percentage
+                                                           sexp-time
+                                                           garbage-collected
+                                                           time-for-gc))
+                 (col-style
+                  (profile-dotemacs-percentage-color
+                   percentage
+                   (face-background 'profile-dotemacs-default-face)
+                   (face-background 'profile-dotemacs-time-face)))
+                 )
+            (overlay-put overlay 'help-echo benchstr)
+
+            (if (and (numberp profile-dotemacs-low-percentage)
+                     (< percentage profile-dotemacs-low-percentage))
+                (overlay-put overlay 'face 'profile-dotemacs-low-percentage-face)
+              (overlay-put overlay 'before-string
+                           (propertize benchstr
+                                       'face 'profile-dotemacs-highlight-face))
+              (overlay-put overlay 'face
+                           `(:background ,col-style))))))
+
+    (let ((overlay (make-overlay (1- (point-max)) (point-max))))
+      (overlay-put overlay 'after-string
+                   (propertize
+                    (format "\n-----------------\nTotal time: %.2fs\n"
+                            total-time)
+                    'face 'profile-dotemacs-highlight-face)))))
 
 (defun profile-dotemacs-totaltime (results)
   "Calculate total time of RESULTS."
   (let ((totaltime 0))
     (mapc (lambda (x)
-	    (let ((cur (car x)))
-	      (setq totaltime (+ totaltime (car cur) (nth 2 cur)))))
-	  results)
+            (destructuring-bind  ((sexp-string start-point end-point) (total-time garbage-collected time-for-gc)) x
+              (setq totaltime (+ totaltime total-time time-for-gc))))
+          results)
     totaltime))
 
 (defun profile-dotemacs-percentage-color (percent col-begin col-end)
@@ -192,7 +209,7 @@ grayed out.")
             (nth 1 col)
             (nth 2 col))))
 
-(defun profile-dotemacs-make-benchstr (timings)
+(defun profile-dotemacs-make-benchstr (percentage sexp-time num-gc time-gc)
   "Create descriptive benchmark string from TIMINGS."
   (format
    (concat
@@ -201,7 +218,7 @@ grayed out.")
     "Number of GC: %d ; "
     "Time for GC: %.2f>\n")
    percentage
-   (car timings) (nth 1 timings) (nth 2 timings)))
+   sexp-time num-gc time-gc))
 
 
 ;; profile-dotemacs.el ends here
